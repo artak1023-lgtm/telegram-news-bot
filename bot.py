@@ -209,8 +209,8 @@ async def fetch_news():
 # MAIN
 # ======================
 async def main():
-    asyncio.create_task(fetch_news())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
+    import asyncio
     asyncio.run(main())
