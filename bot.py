@@ -79,29 +79,31 @@ def get_main_keyboard():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     settings = get_user_settings(user_id)
-existing_jobs = context.job_queue.get_jobs_by_name(str(user_id))
+
+    existing_jobs = context.job_queue.get_jobs_by_name(str(user_id))
     if not existing_jobs:
         context.job_queue.run_repeating(
             check_news,
-            interval=60,   # 1 րոպե
+            interval=60,      # կամ 300՝ եթե 5 րոպե
             first=10,
             data=user_id,
             name=str(user_id)
         )
-        
+
     msg = (
         "🌍 <b>News Monitor Bot</b>\n\n"
-        "Բարի գալուստ! Ես կուղարկեմ ձեզ աշխարհաքաղաքական նորություններ։\n\n"
-        "⚡️ Ստուգում՝ <b>ամեն 1 րոպե</b>\n"
-        "🎯 Ոչ մի նորություն չի բաց մնա\n\n"
-        "Ընտրեք ցանկալի գործողությունը՝"
+        "Բարի գալուստ! Ես կուղարկեմ քեզ ավտոմատ նորություններ\n"
+        "⚡ Ստուգում՝ <b>ամեն 1 րոպե</b>\n"
+        "🎯 Ըստ քո թեմաների\n"
+        "Ընտրիր ցանկից գործողությունը"
     )
-    
+
     await update.message.reply_text(
-        msg, 
+        msg,
         reply_markup=get_main_keyboard(),
         parse_mode='HTML'
     )
+
     logger.info(f"User {user_id} started the bot")
     
     logger.info(f"Started 60-second monitoring for user {user_id}")
