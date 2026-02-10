@@ -36,7 +36,8 @@ DEFAULT_KEYWORDS = [
 # Ավելի մեծ cache վերջին նորությունների համար
 last_check = {}
 user_settings = {}
-
+SUBSCRIBERS = set()
+LAST_SENT_LINKS = set()
 def get_user_settings(user_id):
     if user_id not in user_settings:
         user_settings[user_id] = {
@@ -78,7 +79,15 @@ def get_main_keyboard():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     settings = get_user_settings(user_id)
-    
+existing_jobs = context.job_queue.get_jobs_by_name(str(user_id))
+    if not existing_jobs:
+        context.job_queue.run_repeating(
+            check_news,
+            interval=60,   # 1 րոպե
+            first=10,
+            data=user_id,
+            name=str(user_id)
+        )
     msg = (
         "🌍 <b>News Monitor Bot</b>\n\n"
         "Բարի գալուստ! Ես կուղարկեմ ձեզ աշխարհաքաղաքական նորություններ։\n\n"
@@ -94,19 +103,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     logger.info(f"User {user_id} started the bot")
     
-    # Մաքրել հին job-երը
-    current_jobs = context.job_queue.get_jobs_by_name(str(user_id))
-    for job in current_jobs:
-        job.schedule_removal()
-    
-    # Սկսել նոր monitoring՝ 1 րոպե interval-ով
-    context.job_queue.run_repeating(
-        check_news,
-        interval=settings['check_interval'],  # 60 վայրկյան
-        first=5,  # Առաջին ստուգումը 5 վայրկյանից
-        data=user_id,
-        name=str(user_id)
-    )
     logger.info(f"Started 60-second monitoring for user {user_id}")
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
