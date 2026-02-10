@@ -161,11 +161,11 @@ async def check_news(context: ContextTypes.DEFAULT_TYPE) -> None:
 async def handle_menu_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = update.message.text
     if text == "Ավելացնել աղբյուր":
-        await update.message.reply_text("Գրիր /add_source <RSS URL> (օրինակ՝ /add_source https://news.am/rss)")
+        await update.message.reply_text("Գրիր /add_source <RSS URL>")
     elif text == "Հեռացնել աղբյուր":
         await update.message.reply_text("Գրիր /remove_source <URL>")
     elif text == "Ավելացնել հաշթագ":
-        await update.message.reply_text("Գրիր /add_hashtag <բառ> (օրինակ՝ /add_hashtag հայաստան)")
+        await update.message.reply_text("Գրիր /add_hashtag <բառ>")
     elif text == "Հեռացնել հաշթագ":
         await update.message.reply_text("Գրիր /remove_hashtag <բառ>")
     elif text == "Միացնել մոնիտորինգ":
@@ -174,15 +174,13 @@ async def handle_menu_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
         await stop_monitor(update, context)
     elif text == "Ցուցադրել կարգավորումները":
         data = load_data()
-        sources = "\n".join(data['sources']) if data['sources'] else "Չկա"
-        hashtags = ", ".join(data['hashtags']) if data['hashtags'] else "Չկա"
+        sources = "\n".join(data['sources']) if data['sources'] else "չկա"
+        hashtags = ", ".join(data['hashtags']) if data['hashtags'] else "չկա"
         status = "միացված" if data['monitoring'] else "անջատված"
         msg = f"Աղբյուրներ:\n{sources}\n\nՀաշթագեր: {hashtags}\n\nՄոնիտորինգը՝ {status}"
         await update.message.reply_text(msg)
-    else:
-        await update.message.reply_text("Օգտագործիր կոճակները կամ հրամանները:")
 
-application = Application.builder().token(TOKEN).build()
+application.add_handler(MessageHandler(filters.TEXT & \~filters.COMMAND, handle_menu_buttons))
 
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("add_source", add_source))
