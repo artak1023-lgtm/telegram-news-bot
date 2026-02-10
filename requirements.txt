@@ -1,5 +1,5 @@
 python-telegram-bot[webhooks]==20.7
 feedparser
 pytz
-fastapi
+fastapi>=0.100.0
 uvicorn
