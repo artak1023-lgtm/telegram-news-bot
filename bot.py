@@ -1,35 +1,23 @@
 import os
 import asyncio
-import hashlib
 import feedparser
-from aiogram import Bot, Dispatcher
+from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import Message
 from datetime import datetime
 import pytz
 
-UTC = pytz.utc
-ARM = pytz.timezone("Asia/Yerevan")
-
-def format_times(published):
-    # published = entry.published_parsed
-    utc_time = datetime(*published[:6], tzinfo=UTC)
-    arm_time = utc_time.astimezone(ARM)
-
-    return (
-        f"⏰ 🇺🇸 {utc_time.strftime('%H:%M %d.%m.%Y')} UTC | "
-        f"🇦🇲 {arm_time.strftime('%H:%M %d.%m.%Y')} ARM"
-    )
-
 # ======================
-# CONFIG
+# ENV
 # ======================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHECK_INTERVAL = 60  # seconds
-TZ = pytz.timezone("Asia/Yerevan")
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN is not set")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+
+UTC = pytz.utc
+ARM = pytz.timezone("Asia/Yerevan")
 
 # ======================
 # RSS SOURCES (USA)
@@ -40,129 +28,132 @@ RSS_SOURCES = {
     "CNN": "http://rss.cnn.com/rss/cnn_us.rss",
     "BBC US": "http://feeds.bbci.co.uk/news/world/us_and_canada/rss.xml",
     "NY Times": "https://rss.nytimes.com/services/xml/rss/nyt/US.xml",
+    "Washington Post": "https://feeds.washingtonpost.com/rss/national",
+    "Politico": "https://www.politico.com/rss/politics08.xml",
+    "NBC News": "https://feeds.nbcnews.com/nbcnews/public/news",
+    "ABC News": "https://abcnews.go.com/abcnews/usheadlines",
+    "Fox News": "https://feeds.foxnews.com/foxnews/national"
 }
 
 # ======================
 # RUNTIME STORAGE
 # ======================
 KEYWORDS: set[str] = set()
-SEEN_HASHES: set[str] = set()
+SENT_LINKS: set[str] = set()
 SUBSCRIBERS: set[int] = set()
+
+CHECK_INTERVAL = 60  # seconds
 
 # ======================
 # HELPERS
 # ======================
-def normalize(text: str) -> str:
-    return text.lower()
-
-def entry_hash(title: str, link: str) -> str:
-    return hashlib.sha256(f"{title}{link}".encode()).hexdigest()
-
-def matches_keywords(entry) -> bool:
-    text = normalize(
-        f"{entry.get('title','')} {entry.get('summary','')}"
-    )
-    return any(k in text for k in KEYWORDS)
-
-def format_message(source, entry) -> str:
-    title = entry.title
-    link = entry.link
-
-    published = entry.get("published_parsed")
-    if published:
-        dt = datetime(*published[:6], tzinfo=pytz.utc).astimezone(TZ)
-        time_str = dt.strftime("%H:%M %d.%m.%Y")
-    else:
-        time_str = "—"
-
+def format_times(published):
+    utc_time = datetime(*published[:6], tzinfo=UTC)
+    arm_time = utc_time.astimezone(ARM)
     return (
-        f"📰 <b>{source}</b>\n"
-        f"<b>{title}</b>\n\n"
-        f"⏰ {time_str}\n"
-        f"🔗 {link}"
+        f"⏰ 🇺🇸 {utc_time.strftime('%H:%M %d.%m.%Y')} UTC | "
+        f"🇦🇲 {arm_time.strftime('%H:%M %d.%m.%Y')} ARM"
     )
+
+def match_keywords(text: str) -> bool:
+    if not KEYWORDS:
+        return True
+    text = text.lower()
+    return any(k in text for k in KEYWORDS)
 
 # ======================
 # COMMANDS
 # ======================
 @dp.message(Command("start"))
-async def start(msg: Message):
+async def start(msg: types.Message):
     SUBSCRIBERS.add(msg.chat.id)
     await msg.answer(
-        "🟢 News Monitor աշխատում է\n"
-        "⏱️ Թարմացում՝ ամեն 60 վրկ\n\n"
-        "📌 Հրամաններ:\n"
-        "/keywords\n"
+        "🌍 News Monitor Bot — Ակտիվ է\n\n"
+        "📌 Հրամաններ\n"
+        "/keywords — Keywords\n"
         "/add_keyword բառ\n"
         "/remove_keyword բառ\n"
-        "/stop"
+        "/test_news — Թեստ\n"
+        "/stop — Դադարեցնել"
     )
 
 @dp.message(Command("stop"))
-async def stop(msg: Message):
+async def stop(msg: types.Message):
     SUBSCRIBERS.discard(msg.chat.id)
-    await msg.answer("⛔ Push-երը անջատված են")
-
-@dp.message(Command("add_keyword"))
-async def add_keyword(msg: Message):
-    parts = msg.text.split(maxsplit=1)
-    if len(parts) < 2:
-        return
-    KEYWORDS.add(normalize(parts[1]))
-    await msg.answer(f"➕ Keyword ավելացվեց՝ {parts[1]}")
-
-@dp.message(Command("remove_keyword"))
-async def remove_keyword(msg: Message):
-    parts = msg.text.split(maxsplit=1)
-    if len(parts) < 2:
-        return
-    KEYWORDS.discard(normalize(parts[1]))
-    await msg.answer(f"➖ Keyword հանվեց՝ {parts[1]}")
+    await msg.answer("⛔️ Push նորությունները կանգնեցված են")
 
 @dp.message(Command("keywords"))
-async def list_keywords(msg: Message):
+async def keywords(msg: types.Message):
     if not KEYWORDS:
-        await msg.answer("🔍 Keyword չկա")
+        await msg.answer("🔍 Keywords չկան")
     else:
         await msg.answer("🔍 Keywords:\n" + ", ".join(sorted(KEYWORDS)))
 
+@dp.message(Command("add_keyword"))
+async def add_keyword(msg: types.Message):
+    parts = msg.text.split(maxsplit=1)
+    if len(parts) < 2:
+        return await msg.answer("❗ Օրինակ՝ /add_keyword Trump")
+    KEYWORDS.add(parts[1].lower())
+    await msg.answer(f"➕ Keyword ավելացված է՝ {parts[1]}")
+
+@dp.message(Command("remove_keyword"))
+async def remove_keyword(msg: types.Message):
+    parts = msg.text.split(maxsplit=1)
+    if len(parts) < 2:
+        return await msg.answer("❗ Օրինակ՝ /remove_keyword Trump")
+    KEYWORDS.discard(parts[1].lower())
+    await msg.answer(f"➖ Keyword հեռացված է՝ {parts[1]}")
+
 @dp.message(Command("test_news"))
-async def test_news(msg: Message):
-    found = 0
-    for source, url in RSS_SOURCES.items():
-        feed = feedparser.parse(url)
-        for entry in feed.entries[:5]:
-            if matches_keywords(entry):
-                found += 1
-                await msg.answer(
-                    format_message(source, entry),
-                    parse_mode="HTML"
-                )
-    if found == 0:
-        await msg.answer("❌ Ոչ մի match չգտնվեց")
+async def test_news(msg: types.Message):
+    await msg.answer("🧪 Թեստավորում եմ RSS-երը…")
+    await check_news(test_chat=msg.chat.id)
 
 # ======================
-# BACKGROUND LOOP
+# NEWS LOOP
 # ======================
+async def check_news(test_chat: int | None = None):
+    for source, url in RSS_SOURCES.items():
+        feed = feedparser.parse(url)
+
+        for entry in feed.entries[:5]:
+            if not hasattr(entry, "published_parsed"):
+                continue
+
+            title = entry.title
+            summary = getattr(entry, "summary", "")
+            content = f"{title} {summary}".lower()
+
+            if not match_keywords(content):
+                continue
+
+            if entry.link in SENT_LINKS:
+                continue
+
+            SENT_LINKS.add(entry.link)
+
+            time_text = format_times(entry.published_parsed)
+
+            message = (
+                f"📰 <b>{source}</b>\n"
+                f"<b>{title}</b>\n\n"
+                f"{time_text}\n"
+                f"🔗 {entry.link}"
+            )
+
+            targets = [test_chat] if test_chat else SUBSCRIBERS
+
+            for chat_id in targets:
+                try:
+                    await bot.send_message(chat_id, message, parse_mode="HTML")
+                except Exception:
+                    pass
+
 async def news_loop():
     while True:
-        try:
-            for source, url in RSS_SOURCES.items():
-                feed = feedparser.parse(url)
-                for entry in feed.entries:
-                    h = entry_hash(entry.title, entry.link)
-                    if h in SEEN_HASHES:
-                        continue
-                    if matches_keywords(entry):
-                        SEEN_HASHES.add(h)
-                        msg = format_message(source, entry)
-                        for chat_id in SUBSCRIBERS:
-                            await bot.send_message(
-                                chat_id, msg, parse_mode="HTML"
-                            )
-            await asyncio.sleep(CHECK_INTERVAL)
-        except Exception:
-            await asyncio.sleep(10)
+        await check_news()
+        await asyncio.sleep(CHECK_INTERVAL)
 
 # ======================
 # MAIN
@@ -172,4 +163,4 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    asyncio.run(main())     
+    asyncio.run(main())
