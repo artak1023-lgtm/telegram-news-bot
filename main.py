@@ -4,9 +4,7 @@ import logging
 from datetime import datetime
 import pytz
 import feedparser
-from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, HTTPException
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -18,8 +16,6 @@ if not TOKEN:
     raise ValueError("BOT_TOKEN not set!")
 
 CHANNEL_ID = os.getenv('CHANNEL_ID')
-WEBHOOK_SECRET = os.getenv('WEBHOOK_SECRET', 'supersecret123')
-
 DATA_FILE = 'data.json'
 
 def load_data():
@@ -28,16 +24,10 @@ def load_data():
             return json.load(f)
     except FileNotFoundError:
         return {'sources': [], 'hashtags': [], 'monitoring': False, 'last_seen': {}, 'user_id': None}
-    except Exception as e:
-        logger.error(f"data.json load error: {e}")
-        return {'sources': [], 'hashtags': [], 'monitoring': False, 'last_seen': {}, 'user_id': None}
 
 def save_data(data):
-    try:
-        with open(DATA_FILE, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logger.error(f"data.json save error: {e}")
+    with open(DATA_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     data = load_data()
@@ -96,14 +86,8 @@ async def start_monitor(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     data['monitoring'] = True
     save_data(data)
-    # Ճիշտ գրանցում՝ անունով + logging
-    context.application.job_queue.run_repeating(
-        callback=check_news,
-        interval=300,  # 5 րոպե
-        first=5,
-        name="news_monitor_job"
-    )
-    logger.info("news_monitor_job գրանցվեց")
+    context.job_queue.run_repeating(check_news, interval=300, first=5, name="news_monitor")
+    logger.info("news_monitor job գրանցվեց")
     await update.message.reply_text('Մոնիտորինգը միացավ (ամեն 5 րոպե)')
 
 async def stop_monitor(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -113,83 +97,57 @@ async def stop_monitor(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     data['monitoring'] = False
     save_data(data)
-    # Ջնջել job-ը անունով
-    jobs = context.application.job_queue.get_jobs_by_name("news_monitor_job")
+    jobs = context.job_queue.get_jobs_by_name("news_monitor")
     for job in jobs:
         job.schedule_removal()
-    logger.info("news_monitor_job հեռացվեց")
+    logger.info("news_monitor job հեռացվեց")
     await update.message.reply_text('Մոնիտորինգը անջատվեց')
 
 async def check_news(context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("check_news սկսվեց")
     data = load_data()
     if not data['monitoring']:
-        logger.info("monitoring անջատված է")
         return
-    logger.info(f"Ստուգվում է {len(data['sources'])} աղբյուր")
     for source in data['sources']:
-        try:
-            feed = feedparser.parse(source)
-            if feed.bozo:
-                logger.warning(f"RSS error {source}: {feed.bozo_exception}")
+        feed = feedparser.parse(source)
+        last_seen = data['last_seen'].get(source, {})
+        new_last_seen = last_seen.copy()
+        for entry in feed.entries:
+            guid = entry.get('guid', entry.link)
+            if guid in last_seen:
                 continue
-            last_seen = data['last_seen'].get(source, {})
-            new_last_seen = last_seen.copy()
-            for entry in feed.entries:
-                guid = entry.get('guid') or entry.link
-                if guid in last_seen:
-                    continue
-                title = (entry.title or '').lower()
-                desc = (entry.get('description') or '').lower()
-                matched = [t for t in data['hashtags'] if t in title or t in desc]
-                if matched:
-                    pub_str = entry.get('published') or entry.get('updated')
-                    if pub_str:
-                        dt = feedparser._parse_date(pub_str)
-                        if dt:
-                            utc = datetime(*dt[:6], tzinfo=pytz.utc)
-                            arm = utc.astimezone(pytz.timezone('Asia/Yerevan'))
-                            msg = f"{entry.title}\n{(entry.get('description') or '')[:300]}\n{entry.link}\n🇺🇸 {utc.strftime('%Y-%m-%d %H:%M UTC')}\n🇦🇲 {arm.strftime('%Y-%m-%d %H:%M')}"
-                            await context.bot.send_message(chat_id=CHANNEL_ID, text=msg)
-                            if data['user_id']:
-                                await context.bot.send_message(chat_id=data['user_id'], text=msg)
-                new_last_seen[guid] = True
-            data['last_seen'][source] = new_last_seen
-        except Exception as e:
-            logger.error(f"check_news error {source}: {e}")
+            title = (entry.title or '').lower()
+            desc = (entry.get('description') or '').lower()
+            matched = [t for t in data['hashtags'] if t in title or t in desc]
+            if matched:
+                pub_str = entry.get('published') or entry.get('updated')
+                if pub_str:
+                    dt = feedparser._parse_date(pub_str)
+                    if dt:
+                        utc = datetime(*dt[:6], tzinfo=pytz.utc)
+                        arm = utc.astimezone(pytz.timezone('Asia/Yerevan'))
+                        msg = f"{entry.title}\n{(entry.get('description') or '')[:300]}\n{entry.link}\n🇺🇸 {utc}\n🇦🇲 {arm}"
+                        await context.bot.send_message(chat_id=CHANNEL_ID, text=msg)
+                        if data['user_id']:
+                            await context.bot.send_message(chat_id=data['user_id'], text=msg)
+            new_last_seen[guid] = True
+        data['last_seen'][source] = new_last_seen
     save_data(data)
     logger.info("check_news ավարտվեց")
 
-application = Application.builder().token(TOKEN).build()
+def main():
+    application = Application.builder().token(TOKEN).build()
 
-application.add_handler(CommandHandler("start", start))
-application.add_handler(CommandHandler("add_source", add_source))
-application.add_handler(CommandHandler("remove_source", remove_source))
-application.add_handler(CommandHandler("add_hashtag", add_hashtag))
-application.add_handler(CommandHandler("remove_hashtag", remove_hashtag))
-application.add_handler(CommandHandler("start_monitor", start_monitor))
-application.add_handler(CommandHandler("stop_monitor", stop_monitor))
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("add_source", add_source))
+    application.add_handler(CommandHandler("remove_source", remove_source))
+    application.add_handler(CommandHandler("add_hashtag", add_hashtag))
+    application.add_handler(CommandHandler("remove_hashtag", remove_hashtag))
+    application.add_handler(CommandHandler("start_monitor", start_monitor))
+    application.add_handler(CommandHandler("stop_monitor", stop_monitor))
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    await application.initialize()
-    await application.start()
-    domain = os.getenv('RAILWAY_PUBLIC_DOMAIN')
-    if domain:
-        url = f"https://{domain}/{TOKEN}"
-        await application.bot.set_webhook(url=url, secret_token=WEBHOOK_SECRET)
-        logger.info(f"Webhook set to {url}")
-    yield
-    await application.stop()
-    await application.shutdown()
+    # Polling mode
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
-app = FastAPI(lifespan=lifespan)
-
-@app.post(f"/{TOKEN}")
-async def webhook(request: Request):
-    if WEBHOOK_SECRET:
-        if request.headers.get("X-Telegram-Bot-Api-Secret-Token") != WEBHOOK_SECRET:
-            raise HTTPException(403, "Forbidden")
-    update = Update.de_json(await request.json(), application.bot)
-    await application.process_update(update)
-    return {"ok": True}
+if __name__ == '__main__':
+    main()
