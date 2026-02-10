@@ -1,19 +1,19 @@
 import os
 import asyncio
 import feedparser
-from aiogram import Bot, Dispatcher
+from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import Message
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 
 # ======================
 # ENV
 # ======================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-TZ = pytz.timezone("Asia/Yerevan")
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN is not set")
 
-CHECK_INTERVAL = 10  # 🔁 վայրկյան (test-ի համար 10, prod-ի համար 300)
+TZ = pytz.timezone("Asia/Yerevan")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -37,124 +37,154 @@ RSS_SOURCES = {
 # ======================
 # RUNTIME STORAGE
 # ======================
-keywords = set()
-seen_links = set()
-subscribers = set()
+KEYWORDS = set()
+HASHTAGS = set()
+ENABLED_SOURCES = set(RSS_SOURCES.keys())
+SUBSCRIBERS = set()
+SEEN_LINKS = set()
+
+CHECK_INTERVAL = 60            # seconds
+MAX_DELAY_MINUTES = 5          # freshness window
 
 # ======================
 # HELPERS
 # ======================
 def match_keywords(text: str) -> bool:
-    if not keywords:
+    if not KEYWORDS:
         return True
     text = text.lower()
-    return any(k in text for k in keywords)
+    return any(k in text for k in KEYWORDS)
 
-def format_time(entry):
-    if hasattr(entry, "published_parsed") and entry.published_parsed:
-        dt = datetime(*entry.published_parsed[:6], tzinfo=pytz.utc)
-        return dt.astimezone(TZ).strftime("%Y-%m-%d %H:%M")
-    return "—"
-
-# ======================
-# NEWS CHECK
-# ======================
-async def check_news():
-    sent = 0
-    skipped = 0
-
-    for source, url in RSS_SOURCES.items():
-        feed = feedparser.parse(url)
-
-        for entry in feed.entries[:20]:
-            link = entry.get("link")
-            if not link or link in seen_links:
-                skipped += 1
-                continue
-
-            title = entry.get("title", "")
-            summary = entry.get("summary", "")
-            content = f"{title} {summary}"
-
-            if not match_keywords(content):
-                skipped += 1
-                continue
-
-            seen_links.add(link)
-            sent += 1
-
-            time_str = format_time(entry)
-
-            text = (
-                f"📰 <b>{title}</b>\n\n"
-                f"🗞 <i>{source}</i>\n"
-                f"⏰ {time_str} (AM)\n\n"
-                f"🔗 {link}"
-            )
-
-            for chat_id in subscribers:
-                await bot.send_message(
-                    chat_id,
-                    text,
-                    parse_mode="HTML",
-                    disable_web_page_preview=True
-                )
-
-    print(f"🔄 CHECK DONE | Sent: {sent} | Skipped: {skipped} | Keywords: {keywords}")
-
-# ======================
-# LOOP
-# ======================
-async def news_loop():
-    while True:
-        await check_news()
-        await asyncio.sleep(CHECK_INTERVAL)
+def format_message(source, title, link, published):
+    time_str = published.strftime("%Y-%m-%d %H:%M")
+    return (
+        f"📰 <b>{title}</b>\n\n"
+        f"🏷 <b>Աղբյուր</b>: {source}\n"
+        f"🕒 <b>Ժամ</b>: {time_str} (Հայաստան)\n\n"
+        f"🔗 {link}"
+    )
 
 # ======================
 # COMMANDS
 # ======================
 @dp.message(Command("start"))
-async def start_cmd(message: Message):
-    subscribers.add(message.chat.id)
+async def start_cmd(message: types.Message):
+    SUBSCRIBERS.add(message.chat.id)
     await message.answer(
-        "📰 News Monitor Bot ակտիվ է\n"
-        "🔔 Նորությունները կգան այս չատում\n\n"
-        "Commands:\n"
-        "/add_keyword <word>\n"
+        "🌍 <b>News Monitor Bot — Ակտիվ է</b>\n\n"
+        "📡 ԱՄՆ նորություններ (Reuters, CNN, BBC, NYT...)\n"
+        "🔔 Push՝ հենց նոր հրապարակման ժամանակ\n"
+        "🕒 Հայաստան ժամով\n\n"
+        "📌 Օգնական հրամաններ՝\n"
+        "/sources\n"
         "/keywords\n"
-        "/test_news\n"
-        "/stop"
+        "/add_keyword բառ\n"
+        "/remove_keyword բառ\n"
+        "/stop",
+        parse_mode="HTML"
     )
 
 @dp.message(Command("stop"))
-async def stop_cmd(message: Message):
-    subscribers.discard(message.chat.id)
-    await message.answer("⛔ Push-ը կանգնեցված է")
-
-@dp.message(Command("add_keyword"))
-async def add_keyword(message: Message):
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2:
-        await message.answer("❗ Օրինակ՝ /add_keyword trump")
-        return
-
-    kw = parts[1].lower()
-    keywords.add(kw)
-    await message.answer(f"➕ Keyword ավելացվեց՝ <b>{kw}</b>", parse_mode="HTML")
+async def stop_cmd(message: types.Message):
+    SUBSCRIBERS.discard(message.chat.id)
+    await message.answer("⛔ Push նորությունները կանգնեցված են")
 
 @dp.message(Command("keywords"))
-async def list_keywords(message: Message):
-    if not keywords:
+async def list_keywords(message: types.Message):
+    if not KEYWORDS:
         await message.answer("🔍 Keyword չկա")
     else:
-        text = "🔍 Keywords:\n" + ", ".join(sorted(list(keywords)))
-        await message.answer(text)
+        await message.answer("🔍 Keywords:\n" + ", ".join(sorted(KEYWORDS)))
+
+@dp.message(Command("add_keyword"))
+async def add_keyword(message: types.Message):
+    try:
+        word = message.text.split(maxsplit=1)[1].lower()
+        KEYWORDS.add(word)
+        await message.answer(f"➕ Keyword ավելացված՝ <b>{word}</b>", parse_mode="HTML")
+    except:
+        await message.answer("❗ Օգտագործում՝ /add_keyword բառ")
+
+@dp.message(Command("remove_keyword"))
+async def remove_keyword(message: types.Message):
+    try:
+        word = message.text.split(maxsplit=1)[1].lower()
+        KEYWORDS.discard(word)
+        await message.answer(f"➖ Keyword հեռացված՝ <b>{word}</b>", parse_mode="HTML")
+    except:
+        await message.answer("❗ Օգտագործում՝ /remove_keyword բառ")
+
+@dp.message(Command("sources"))
+async def list_sources(message: types.Message):
+    text = "🗞 <b>Աղբյուրներ</b>:\n\n"
+    for s in RSS_SOURCES:
+        mark = "✅" if s in ENABLED_SOURCES else "❌"
+        text += f"{mark} {s}\n"
+    await message.answer(text, parse_mode="HTML")
 
 @dp.message(Command("test_news"))
-async def test_news(message: Message):
-    await message.answer("🧪 Թեստավորում եմ RSS-ները…")
-    await check_news()
-    await message.answer("✅ Թեստն ավարտվեց (նայիր՝ եկա՞վ նորություն)")
+async def test_news(message: types.Message):
+    await message.answer("🧪 Թեստավորում եմ RSS-երը...")
+    await check_news(force_send=True)
+    await message.answer("✅ Թեստն ավարտված է")
+
+# ======================
+# NEWS LOOP
+# ======================
+async def check_news(force_send=False):
+    now = datetime.now(TZ)
+
+    for source, url in RSS_SOURCES.items():
+        if source not in ENABLED_SOURCES:
+            continue
+
+        feed = feedparser.parse(url)
+
+        for entry in feed.entries:
+            link = entry.get("link")
+            if not link or link in SEEN_LINKS:
+                continue
+
+            published = None
+            if hasattr(entry, "published_parsed") and entry.published_parsed:
+                published = datetime(
+                    *entry.published_parsed[:6],
+                    tzinfo=pytz.utc
+                ).astimezone(TZ)
+
+            if not published:
+                continue
+
+            if not force_send:
+                if now - published > timedelta(minutes=MAX_DELAY_MINUTES):
+                    continue
+
+            title = entry.get("title", "")
+            text = f"{title} {entry.get('summary', '')}".lower()
+
+            if not match_keywords(text):
+                continue
+
+            message = format_message(source, title, link, published)
+
+            for chat_id in list(SUBSCRIBERS):
+                try:
+                    await bot.send_message(chat_id, message, parse_mode="HTML")
+                except:
+                    pass
+
+            SEEN_LINKS.add(link)
+
+# ======================
+# BACKGROUND TASK
+# ======================
+async def news_loop():
+    while True:
+        try:
+            await check_news()
+        except Exception as e:
+            print("ERROR:", e)
+        await asyncio.sleep(CHECK_INTERVAL)
 
 # ======================
 # MAIN
