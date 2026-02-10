@@ -1,3 +1,0 @@
-git add .
-git commit -m "Fix build: python 3.11"
-git push
