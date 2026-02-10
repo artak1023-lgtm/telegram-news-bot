@@ -88,6 +88,7 @@ existing_jobs = context.job_queue.get_jobs_by_name(str(user_id))
             data=user_id,
             name=str(user_id)
         )
+        
     msg = (
         "🌍 <b>News Monitor Bot</b>\n\n"
         "Բարի գալուստ! Ես կուղարկեմ ձեզ աշխարհաքաղաքական նորություններ։\n\n"
