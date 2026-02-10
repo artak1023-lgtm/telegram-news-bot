@@ -79,7 +79,6 @@ def get_main_keyboard():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     settings = get_user_settings(user_id)
-    
     existing_jobs = context.job_queue.get_jobs_by_name(str(user_id))
     if not existing_jobs:
         context.job_queue.run_repeating(
