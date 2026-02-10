@@ -35,7 +35,7 @@ DEFAULT_KEYWORDS = [
 ]
 
 # Ավելի մեծ cache վերջին նորությունների համար
-last_check = {}
+last_check = set()  # Global cache բոլոր ուղարկված նորությունների համար
 user_settings = {}
 
 def get_user_settings(user_id):
@@ -81,10 +81,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     settings = get_user_settings(user_id)
     
     msg = (
-        "🌍 <b>News Monitor Bot</b>\n\n"
+        "🌍 <b>Artak News Monitor Bot</b>\n\n"
         "Բարի գալուստ! Ես կուղարկեմ ձեզ աշխարհաքաղաքական նորություններ։\n\n"
-        "⚡️ Ստուգում՝ <b>ամեն 1 րոպե</b>\n"
-        "🎯 Ոչ մի նորություն չի բաց մնա\n\n"
+        "⚡️ Ավտոմատ ստուգում՝ <b>ամեն 1 րոպե</b>\n"
+        "🎯 Ոչ մի նորություն չի բաց մնա\n"
+        "📢 Նորությունները ուղարկվում են channel-ին\n\n"
         "Ընտրեք ցանկալի գործողությունը՝"
     )
     
@@ -152,8 +153,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("« Հետ", callback_data='back')]
         ]
         
+        channel_info = f"📢 Channel՝ {CHANNEL_ID}" if CHANNEL_ID else "⚠️ Channel չի սահմանված"
+        
         await query.edit_message_text(
             f"⚙️ <b>Կարգավորումներ</b>\n\n"
+            f"{channel_info}\n"
             f"Ծանուցումներ՝ {status}\n"
             f"Ստուգման հաճախականություն՝ <b>{interval_min} րոպե</b>\n"
             f"Աղբյուրներ՝ {len(settings['sources'])}\n"
@@ -184,7 +188,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         interval_min = new_interval // 60
         await query.edit_message_text(
             f"✅ Հաճախականությունը փոխված է՝ <b>{interval_min} րոպե</b>\n\n"
-            f"Նոր նորությունները կստուգվեն ամեն {interval_min} րոպեն։",
+            f"Նոր նորությունները կստուգվեն ամեն {interval_min} րոպեն։\n"
+            f"(Փոփոխությունը կկիրառվի հաջորդ ստուգումից)",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Հետ", callback_data='settings')]]),
             parse_mode='HTML'
         )
@@ -245,7 +250,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif query.data == 'back':
         msg = (
-            "🌍 <b>News Monitor Bot</b>\n\n"
+            "🌍 <b>Artak News Monitor Bot</b>\n\n"
             "Ընտրեք գործողությունը՝"
         )
         await query.edit_message_text(
@@ -364,18 +369,20 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def check_news(context: ContextTypes.DEFAULT_TYPE):
     """Ստուգել նորությունները - կանչվում է ավտոմատ ամեն 1 րոպե"""
-    # Եթե CHANNEL_ID կա, ուղարկել channel-ին, եթե ոչ՝ բոլոր active users-ին
-    if CHANNEL_ID:
-        target_id = CHANNEL_ID
-        settings = get_user_settings('channel_default')
-    else:
-        # Եթե channel չկա, ուղարկել բոլոր users-ին (հին տարբերակ)
+    global last_check
+    
+    if not CHANNEL_ID:
+        logger.warning("CHANNEL_ID not set, skipping news check")
         return
+    
+    # Օգտագործել default settings
+    settings = get_user_settings('channel_default')
     
     if not settings['active']:
+        logger.info("News monitoring is disabled")
         return
     
-    logger.info(f"Checking news for channel/user {target_id}...")
+    logger.info(f"Checking news for channel {CHANNEL_ID}...")
     new_articles = []
     
     for name, url in settings['sources'].items():
@@ -391,7 +398,7 @@ async def check_news(context: ContextTypes.DEFAULT_TYPE):
                 article_id = f"{name}_{link}"
                 
                 # Եթե արդեն ուղարկել ենք, բաց թողնել
-                if article_id in last_check.get('global', set()):
+                if article_id in last_check:
                     continue
                 
                 # Ստուգել բանալի բառերը
@@ -425,32 +432,46 @@ async def check_news(context: ContextTypes.DEFAULT_TYPE):
             msg += f"🔗 {article['link']}"
             
             await context.bot.send_message(
-                chat_id=target_id, 
+                chat_id=CHANNEL_ID, 
                 text=msg,
                 parse_mode='HTML',
                 disable_web_page_preview=True
             )
             
             # Պահպանել որ չկրկնվի
-            if 'global' not in last_check:
-                last_check['global'] = set()
-            last_check['global'].add(article['article_id'])
+            last_check.add(article['article_id'])
             
             # Պահպանել վերջին 200 նորությունները cache-ում
-            if len(last_check['global']) > 200:
-                last_check['global'] = set(list(last_check['global'])[-100:])
+            if len(last_check) > 200:
+                # Վերցնել վերջին 100-ը
+                last_check = set(list(last_check)[-100:])
             
-            await asyncio.sleep(1.5)  # Փոքր ընդմիջում spam-ից խուսափելու համար
+            await asyncio.sleep(2)  # Փոքր ընդմիջում spam-ից խուսափելու համար
             
         except Exception as e:
             logger.error(f"Error sending article: {e}")
     
     if new_articles_sorted:
-        logger.info(f"Sent {len(new_articles_sorted)} new articles to channel/user {target_id}")
+        logger.info(f"Sent {len(new_articles_sorted)} new articles to channel {CHANNEL_ID}")
+    else:
+        logger.info("No new articles found")
 
 async def post_init(application: Application) -> None:
     """Սկսել ավտոմատ monitoring bot-ը միացնելիս"""
-    logger.info("Bot started! Setting up automatic news monitoring...")
+    logger.info("=" * 60)
+    logger.info("🚀 Bot started! Setting up automatic news monitoring...")
+    logger.info("=" * 60)
+    
+    if not CHANNEL_ID:
+        logger.error("❌ CHANNEL_ID is not set!")
+        logger.error("Please set CHANNEL_ID environment variable")
+        logger.error("Example: CHANNEL_ID=-1001234567890")
+        return
+    
+    logger.info(f"✅ Channel ID: {CHANNEL_ID}")
+    logger.info(f"✅ Check interval: 60 seconds (1 minute)")
+    logger.info(f"✅ Sources: {len(DEFAULT_SOURCES)}")
+    logger.info(f"✅ Keywords: {len(DEFAULT_KEYWORDS)}")
     
     # Ավելացնել global monitoring job
     application.job_queue.run_repeating(
@@ -459,18 +480,19 @@ async def post_init(application: Application) -> None:
         first=10,     # Առաջին ստուգումը 10 վայրկյանից
         name='global_news_monitor'
     )
-    logger.info("Automatic monitoring started! Will check news every 60 seconds.")
+    
+    logger.info("=" * 60)
+    logger.info("✅ Automatic monitoring started!")
+    logger.info("📡 Will check news every 60 seconds")
+    logger.info("=" * 60)
 
 def main():
     if not TOKEN:
-        logger.error("BOT_TOKEN not set!")
+        logger.error("❌ BOT_TOKEN not set!")
+        logger.error("Please set BOT_TOKEN environment variable")
         return
     
-    if not CHANNEL_ID:
-        logger.warning("CHANNEL_ID not set! Bot will not send automatic updates.")
-        logger.warning("Please set CHANNEL_ID environment variable to your channel ID.")
-    
-    logger.info("Starting bot with automatic monitoring...")
+    logger.info("Starting Artak News Monitor Bot...")
     app = Application.builder().token(TOKEN).post_init(post_init).build()
     
     app.add_handler(CommandHandler("start", start))
@@ -478,7 +500,7 @@ def main():
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    logger.info("Bot is running with real-time news monitoring!")
+    logger.info("🤖 Bot is running!")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == '__main__':
