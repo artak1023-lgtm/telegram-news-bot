@@ -147,4 +147,21 @@ async def list_keywords(message: Message):
     if not keywords:
         await message.answer("🔍 Keyword չկա")
     else:
-        await message.answer("🔍 Keywords:\n" + ", ".join(sorted
+        text = "🔍 Keywords:\n" + ", ".join(sorted(list(keywords)))
+        await message.answer(text)
+
+@dp.message(Command("test_news"))
+async def test_news(message: Message):
+    await message.answer("🧪 Թեստավորում եմ RSS-ները…")
+    await check_news()
+    await message.answer("✅ Թեստն ավարտվեց (նայիր՝ եկա՞վ նորություն)")
+
+# ======================
+# MAIN
+# ======================
+async def main():
+    asyncio.create_task(news_loop())
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
