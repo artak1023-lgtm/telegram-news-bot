@@ -518,8 +518,14 @@ def main():
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    logger.info("Bot is running with real-time news monitoring!")
-    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+    async def post_init(app):
+    await app.bot.delete_webhook(drop_pending_updates=True)
+    logger.info("Webhook deleted — safe polling mode")
+
+app.post_init = post_init
+
+logger.info("Bot is running with real-time news monitoring!")
+app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == '__main__':
     main()
