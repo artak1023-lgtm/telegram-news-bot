@@ -171,13 +171,15 @@ def main():
         name="news-check",
     )
 
-    if WEBHOOK_URL:
-        app.run_webhook(
-            listen="0.0.0.0",
-            port=PORT,
-            webhook_url=f"{WEBHOOK_URL}/webhook",
-            on_startup=on_startup,
-        )
+    # նախ start ենք տալիս scheduler-ը
+scheduler.start()
+
+# հետո՝ webhook
+app.run_webhook(
+    listen="0.0.0.0",
+    port=PORT,
+    webhook_url=WEBHOOK_URL,
+)
     else:
         app.run_polling()
 
