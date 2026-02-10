@@ -12,10 +12,8 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 TOKEN = os.getenv('BOT_TOKEN')
-if not TOKEN:
-    raise ValueError("BOT_TOKEN not set!")
-
 CHANNEL_ID = os.getenv('CHANNEL_ID')
+
 DATA_FILE = 'data.json'
 
 def load_data():
@@ -109,29 +107,35 @@ async def check_news(context: ContextTypes.DEFAULT_TYPE) -> None:
     if not data['monitoring']:
         return
     for source in data['sources']:
-        feed = feedparser.parse(source)
-        last_seen = data['last_seen'].get(source, {})
-        new_last_seen = last_seen.copy()
-        for entry in feed.entries:
-            guid = entry.get('guid', entry.link)
-            if guid in last_seen:
+        try:
+            feed = feedparser.parse(source)
+            if feed.bozo:
+                logger.warning(f"RSS error {source}: {feed.bozo_exception}")
                 continue
-            title = (entry.title or '').lower()
-            desc = (entry.get('description') or '').lower()
-            matched = [t for t in data['hashtags'] if t in title or t in desc]
-            if matched:
-                pub_str = entry.get('published') or entry.get('updated')
-                if pub_str:
-                    dt = feedparser._parse_date(pub_str)
-                    if dt:
-                        utc = datetime(*dt[:6], tzinfo=pytz.utc)
-                        arm = utc.astimezone(pytz.timezone('Asia/Yerevan'))
-                        msg = f"{entry.title}\n{(entry.get('description') or '')[:300]}\n{entry.link}\n🇺🇸 {utc}\n🇦🇲 {arm}"
-                        await context.bot.send_message(chat_id=CHANNEL_ID, text=msg)
-                        if data['user_id']:
-                            await context.bot.send_message(chat_id=data['user_id'], text=msg)
-            new_last_seen[guid] = True
-        data['last_seen'][source] = new_last_seen
+            last_seen = data['last_seen'].get(source, {})
+            new_last_seen = last_seen.copy()
+            for entry in feed.entries:
+                guid = entry.get('guid') or entry.link
+                if guid in last_seen:
+                    continue
+                title = (entry.title or '').lower()
+                desc = (entry.get('description') or '').lower()
+                matched = [t for t in data['hashtags'] if t in title or t in desc]
+                if matched:
+                    pub_str = entry.get('published') or entry.get('updated')
+                    if pub_str:
+                        dt = feedparser._parse_date(pub_str)
+                        if dt:
+                            utc = datetime(*dt[:6], tzinfo=pytz.utc)
+                            arm = utc.astimezone(pytz.timezone('Asia/Yerevan'))
+                            msg = f"{entry.title}\n{(entry.get('description') or '')[:300]}\n{entry.link}\n🇺🇸 {utc}\n🇦🇲 {arm}"
+                            await context.bot.send_message(chat_id=CHANNEL_ID, text=msg)
+                            if data['user_id']:
+                                await context.bot.send_message(chat_id=data['user_id'], text=msg)
+                new_last_seen[guid] = True
+            data['last_seen'][source] = new_last_seen
+        except Exception as e:
+            logger.error(f"check_news error {source}: {e}")
     save_data(data)
     logger.info("check_news ավարտվեց")
 
@@ -146,8 +150,13 @@ def main():
     application.add_handler(CommandHandler("start_monitor", start_monitor))
     application.add_handler(CommandHandler("stop_monitor", stop_monitor))
 
-    # Polling mode
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    logger.info("Polling mode-ով սկսվում է...")
+    application.run_polling(
+        poll_interval=1.0,
+        timeout=20,
+        bootstrap_retries=-1,
+        allowed_updates=Update.ALL_TYPES
+    )
 
 if __name__ == '__main__':
     main()
