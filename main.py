@@ -21,97 +21,103 @@ DATA_FILE = 'data.json'
 
 def load_data():
     try:
-        with open(DATA_FILE, 'r', encoding='utf-8') as f:
+        with open(DATA_FILE, 'r') as f:
             return json.load(f)
     except FileNotFoundError:
         return {'sources': [], 'hashtags': [], 'monitoring': False, 'last_seen': {}, 'user_id': None}
 
 def save_data(data):
-    with open(DATA_FILE, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    with open(DATA_FILE, 'w') as f:
+        json.dump(data, f)
 
-# Reply Keyboard - միայն 3 կոճակ (հեշտ է ստուգել)
-def get_simple_menu():
+def get_main_menu_keyboard():
     keyboard = [
-        [KeyboardButton("Միացնել մոնիտորինգ"), KeyboardButton("Անջատել մոնիտորինգ")],
-        [KeyboardButton("Ցուցադրել կարգավորումները")]
+        ["Ավելացնել աղբյուր", "Ավելացնել հաշթագ"],
+        ["Միացնել մոնիտորինգ", "Անջատել մոնիտորինգ"],
+        ["Ցուցադրել կարգավորումները"]
     ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     data = load_data()
-    data['user_id'] = update.effective_user.id
+    data['user_id'] = update.message.from_user.id
     save_data(data)
-    reply_markup = get_simple_menu()
-    await update.message.reply_text(
-        'Բոտը աշխատում է!\n'
-        'Օգտագործիր կոճակները ներքևում կամ հրամանները:\n\n'
-        '/add_source <RSS URL>\n'
-        '/add_hashtag <բառ>\n'
-        '/start_monitor և այլն',
-        reply_markup=reply_markup
-    )
+    keyboard = get_main_menu_keyboard()
+    await update.message.reply_text('Բոտը սկսված է! Օգտագործիր կոճակները:', reply_markup=keyboard)
 
 async def add_source(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not context.args:
-        return await update.message.reply_text('/add_source <RSS URL>')
+        await update.message.reply_text('Օգտագործիր /add_source <RSS URL>')
+        return
     url = context.args[0]
     data = load_data()
     if url not in data['sources']:
         data['sources'].append(url)
         save_data(data)
-        await update.message.reply_text(f'Ավելացվեց: {url}')
+        await update.message.reply_text(f'Աղբյուրը ավելացված է: {url}')
     else:
-        await update.message.reply_text('Արդեն կա')
+        await update.message.reply_text('Աղբյուրը արդեն կա:')
 
 async def remove_source(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not context.args:
-        return await update.message.reply_text('/remove_source <URL>')
+        await update.message.reply_text('Օգտագործիր /remove_source <RSS URL>')
+        return
     url = context.args[0]
     data = load_data()
     if url in data['sources']:
         data['sources'].remove(url)
         save_data(data)
-        await update.message.reply_text(f'Հեռացվեց: {url}')
+        await update.message.reply_text(f'Աղբյուրը հեռացված է: {url}')
+    else:
+        await update.message.reply_text('Աղբյուրը չի գտնվել:')
 
 async def add_hashtag(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not context.args:
-        return await update.message.reply_text('/add_hashtag <բառ>')
-    tag = context.args[0].lower().strip()
+        await update.message.reply_text('Օգտագործիր /add_hashtag <tag>')
+        return
+    tag = context.args[0].lower()
     data = load_data()
     if tag not in data['hashtags']:
         data['hashtags'].append(tag)
         save_data(data)
-        await update.message.reply_text(f'Ավելացվեց: {tag}')
+        await update.message.reply_text(f'Հաշթագը ավելացված է: {tag}')
+    else:
+        await update.message.reply_text('Հաշթագը արդեն կա:')
 
 async def remove_hashtag(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not context.args:
-        return await update.message.reply_text('/remove_hashtag <բառ>')
-    tag = context.args[0].lower().strip()
+        await update.message.reply_text('Օգտագործիր /remove_hashtag <tag>')
+        return
+    tag = context.args[0].lower()
     data = load_data()
     if tag in data['hashtags']:
         data['hashtags'].remove(tag)
         save_data(data)
-        await update.message.reply_text(f'Հեռացվեց: {tag}')
+        await update.message.reply_text(f'Հաշթագը հեռացված է: {tag}')
+    else:
+        await update.message.reply_text('Հաշթագը չի գտնվել:')
 
 async def start_monitor(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     data = load_data()
     if data['monitoring']:
-        return await update.message.reply_text('Արդեն միացված է')
+        await update.message.reply_text('Մոնիտորինգը արդեն միացված է:')
+        return
     data['monitoring'] = True
     save_data(data)
-    context.job_queue.run_repeating(check_news, interval=60, first=10)
-    await update.message.reply_text('Մոնիտորինգը միացավ')
+    context.job_queue.run_repeating(check_news, interval=60, first=0)
+    await update.message.reply_text('Մոնիտորինգը սկսված է: Ամեն րոպե կստուգի:')
 
 async def stop_monitor(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     data = load_data()
     if not data['monitoring']:
-        return await update.message.reply_text('Արդեն անջատված է')
+        await update.message.reply_text('Մոնիտորինգը արդեն կանգնած է:')
+        return
     data['monitoring'] = False
     save_data(data)
-    for job in context.job_queue.jobs():
+    current_jobs = context.job_queue.jobs()
+    for job in current_jobs:
         job.schedule_removal()
-    await update.message.reply_text('Մոնիտորինգը անջատվեց')
+    await update.message.reply_text('Մոնիտորինգը կանգնած է:')
 
 async def check_news(context: ContextTypes.DEFAULT_TYPE) -> None:
     data = load_data()
@@ -120,44 +126,44 @@ async def check_news(context: ContextTypes.DEFAULT_TYPE) -> None:
     for source in data['sources']:
         feed = feedparser.parse(source)
         last_seen = data['last_seen'].get(source, {})
-        new_last_seen = last_seen.copy()
+        new_last_seen = {}
         for entry in feed.entries:
             guid = entry.get('guid', entry.link)
             if guid in last_seen:
                 continue
-            title = (entry.title or '').lower()
-            desc = (entry.get('description') or '').lower()
-            matched = [t for t in data['hashtags'] if t in title or t in desc]
-            if matched:
-                pub_str = entry.get('published') or entry.get('updated')
-                if pub_str:
-                    dt = feedparser._parse_date(pub_str)
-                    if dt:
-                        utc = datetime(*dt[:6], tzinfo=pytz.utc)
-                        arm = utc.astimezone(pytz.timezone('Asia/Yerevan'))
-                        msg = f"{entry.title}\n{(entry.get('description') or '')[:300]}\n{entry.link}\n🇺🇸 {utc.strftime('%Y-%m-%d %H:%M UTC')}\n🇦🇲 {arm.strftime('%Y-%m-%d %H:%M')}"
-                        await context.bot.send_message(chat_id=CHANNEL_ID, text=msg)
-                        if data['user_id']:
-                            await context.bot.send_message(chat_id=data['user_id'], text=msg)
+            title = entry.title.lower()
+            desc = entry.get('description', '').lower()
+            hashtags = [tag for tag in data['hashtags'] if tag in title or tag in desc]
+            if hashtags:
+                pubdate_str = entry.published if 'published' in entry else entry.updated
+                pubdate = feedparser._parse_date(pubdate_str)
+                utc_time = datetime(*pubdate[:6], tzinfo=pytz.utc)
+                arm_time = utc_time.astimezone(pytz.timezone('Asia/Yerevan'))
+                message = f"{entry.title}\n{entry.get('description', 'No desc')[:200]}...\n{entry.link}\n🇺🇸 {utc_time.strftime('%Y-%m-%d %H:%M:%S UTC')}\n🇦🇲 {arm_time.strftime('%Y-%m-%d %H:%M:%S Asia/Yerevan')}"
+                await context.bot.send_message(chat_id=CHANNEL_ID, text=message)
+                if data['user_id']:
+                    await context.bot.send_message(chat_id=data['user_id'], text=message)
             new_last_seen[guid] = True
         data['last_seen'][source] = new_last_seen
     save_data(data)
 
-# Նոր handler մենյուի կոճակների համար
 async def handle_menu_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = update.message.text
-    if text == "Միացնել մոնիտորինգ":
+    if text == "Ավելացնել աղբյուր":
+        await update.message.reply_text("Գրիր /add_source <RSS URL>")
+    elif text == "Ավելացնել հաշթագ":
+        await update.message.reply_text("Գրիր /add_hashtag <բառ>")
+    elif text == "Միացնել մոնիտորինգ":
         await start_monitor(update, context)
     elif text == "Անջատել մոնիտորինգ":
         await stop_monitor(update, context)
     elif text == "Ցուցադրել կարգավորումները":
         data = load_data()
-        sources = "\n".join(data['sources']) if data['sources'] else "չկա"
-        hashtags = ", ".join(data['hashtags']) if data['hashtags'] else "չկա"
+        sources = "\n".join(data['sources']) or "Չկա"
+        hashtags = ", ".join(data['hashtags']) or "Չկա"
         status = "միացված" if data['monitoring'] else "անջատված"
-        await update.message.reply_text(f"Աղբյուրներ:\n{sources}\n\nՀաշթագեր: {hashtags}\nՄոնիտորինգը՝ {status}")
-    else:
-        await update.message.reply_text("Օգտագործիր կոճակները կամ հրամանները")
+        msg = f"Աղբյուրներ:\n{sources}\n\nՀաշթագեր: {hashtags}\n\nՄոնիտորինգը: {status}"
+        await update.message.reply_text(msg)
 
 application = Application.builder().token(TOKEN).build()
 
@@ -168,8 +174,6 @@ application.add_handler(CommandHandler("add_hashtag", add_hashtag))
 application.add_handler(CommandHandler("remove_hashtag", remove_hashtag))
 application.add_handler(CommandHandler("start_monitor", start_monitor))
 application.add_handler(CommandHandler("stop_monitor", stop_monitor))
-
-# Մենյուի handler-ը
 application.add_handler(MessageHandler(filters.TEXT & \~filters.COMMAND, handle_menu_buttons))
 
 @asynccontextmanager
