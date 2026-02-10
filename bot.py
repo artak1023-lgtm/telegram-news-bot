@@ -9,6 +9,7 @@ from telegram.ext import (
     Application, CommandHandler, ContextTypes, 
     CallbackQueryHandler, MessageHandler, filters
 )
+from email.utils import parsedate_to_datetime  # Added this import
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -51,7 +52,6 @@ def get_user_settings(user_id):
 def format_time_with_timezones(published_time):
     """Ֆորմատավորել ժամը երկու ժամային գոտիներով"""
     try:
-        from email.utils import parsedate_to_datetime
         dt = parsedate_to_datetime(published_time)
         
         us_tz = pytz.timezone('America/New_York')
@@ -319,6 +319,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def send_digest(query, user_id, settings):
     articles = []
     
+    one_hour_ago = datetime.now(pytz.utc) - timedelta(hours=1)  # Added filter for last hour
+    
     # Հավաքել բոլոր նորությունները ժամանակով
     for name, url in settings['sources'].items():
         try:
@@ -328,14 +330,15 @@ async def send_digest(query, user_id, settings):
                 text = (title + ' ' + entry.get('summary', '')).lower()
                 if any(kw in text for kw in settings['keywords']):
                     time_str, dt = format_time_with_timezones(entry.get('published', ''))
-                    articles.append({
-                        'source': name,
-                        'title': title,
-                        'link': entry.get('link', ''),
-                        'published': entry.get('published', ''),
-                        'time_str': time_str,
-                        'datetime': dt
-                    })
+                    if dt and dt >= one_hour_ago:
+                        articles.append({
+                            'source': name,
+                            'title': title,
+                            'link': entry.get('link', ''),
+                            'published': entry.get('published', ''),
+                            'time_str': time_str,
+                            'datetime': dt
+                        })
         except Exception as e:
             logger.error(f"Error fetching {name}: {e}")
     
@@ -348,7 +351,7 @@ async def send_digest(query, user_id, settings):
     
     # Դասավորել ամենավերջիններից՝ առաջինը
     articles_sorted = sorted(
-        [a for a in articles if a['datetime']], 
+        articles, 
         key=lambda x: x['datetime'], 
         reverse=True  # Ամենավերջինները առաջ
     )
@@ -448,7 +451,9 @@ async def check_news(context: ContextTypes.DEFAULT_TYPE):
                 article_id = f"{name}_{link}"
                 
                 # Եթե արդեն ուղարկել ենք, բաց թողնել
-                if article_id in last_check.get(user_id, set()):
+                if user_id not in last_check:
+                    last_check[user_id] = set()
+                if article_id in last_check[user_id]:
                     continue
                 
                 # Ստուգել բանալի բառերը
@@ -489,13 +494,11 @@ async def check_news(context: ContextTypes.DEFAULT_TYPE):
             )
             
             # Պահպանել որ չկրկնվի
-            if user_id not in last_check:
-                last_check[user_id] = set()
             last_check[user_id].add(article['article_id'])
             
             # Պահպանել վերջին 200 նորությունները cache-ում
             if len(last_check[user_id]) > 200:
-                last_check[user_id] = set(list(last_check[user_id])[-100:])
+                last_check[user_id] = set(list(last_check[user_id])[-200:])  # Fixed to 200 as per comment
             
             await asyncio.sleep(1.5)  # Փոքր ընդմիջում spam-ից խուսափելու համար
             
@@ -511,9 +514,4 @@ def main():
         return
     
     logger.info("Starting bot with 60-second monitoring...")
-    app = Application.builder().token(TOKEN).build()
-    
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("cancel", cancel))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    
+    app = Application.builder().tok
