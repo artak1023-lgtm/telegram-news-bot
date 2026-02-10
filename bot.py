@@ -1,166 +1,154 @@
-import os
-import asyncio
+import logging
 import feedparser
-from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
-from datetime import datetime
-import pytz
+import asyncio
+import os
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes
 
-# ======================
-# ENV
-# ======================
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN is not set")
+logging.basicConfig(format='%(asctime)s - %(levelname)s', level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()
+TOKEN = os.environ.get('BOT_TOKEN')
 
-UTC = pytz.utc
-ARM = pytz.timezone("Asia/Yerevan")
-
-# ======================
-# RSS SOURCES (USA)
-# ======================
-RSS_SOURCES = {
-    "Reuters": "https://feeds.reuters.com/reuters/USNews",
-    "AP News": "https://apnews.com/rss",
-    "CNN": "http://rss.cnn.com/rss/cnn_us.rss",
-    "BBC US": "http://feeds.bbci.co.uk/news/world/us_and_canada/rss.xml",
-    "NY Times": "https://rss.nytimes.com/services/xml/rss/nyt/US.xml",
-    "Washington Post": "https://feeds.washingtonpost.com/rss/national",
-    "Politico": "https://www.politico.com/rss/politics08.xml",
-    "NBC News": "https://feeds.nbcnews.com/nbcnews/public/news",
-    "ABC News": "https://abcnews.go.com/abcnews/usheadlines",
-    "Fox News": "https://feeds.foxnews.com/foxnews/national"
+NEWS_SOURCES = {
+    'BBC': 'http://feeds.bbci.co.uk/news/world/rss.xml',
+    'CNN': 'http://rss.cnn.com/rss/edition_world.rss',
+    'Reuters': 'https://feeds.reuters.com/reuters/worldNews',
+    'NYT': 'https://rss.nytimes.com/services/xml/rss/nyt/World.xml',
 }
 
-# ======================
-# RUNTIME STORAGE
-# ======================
-KEYWORDS: set[str] = set()
-SENT_LINKS: set[str] = set()
-SUBSCRIBERS: set[int] = set()
+KEYWORDS = [
+    'russia', 'china', 'ukraine', 'nato', 'geopolit',
+    'sanctions', 'conflict', 'war', 'diplomacy', 'trump',
+    'europe', 'middle east', 'taiwan', 'israel', 'iran',
+    'armenia', 'azerbaijan', 'turkey', 'election', 'military'
+]
 
-CHECK_INTERVAL = 60  # seconds
+last_check = {}
+user_settings = {}
 
-# ======================
-# HELPERS
-# ======================
-def format_times(published):
-    utc_time = datetime(*published[:6], tzinfo=UTC)
-    arm_time = utc_time.astimezone(ARM)
-    return (
-        f"⏰ 🇺🇸 {utc_time.strftime('%H:%M %d.%m.%Y')} UTC | "
-        f"🇦🇲 {arm_time.strftime('%H:%M %d.%m.%Y')} ARM"
-    )
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_settings[user_id] = {'active': True, 'keywords': KEYWORDS.copy()}
+    
+    msg = "🌍 News Monitor Bot\n\nԱկտիվացված է!\n\nԵս կուղարկեմ աշխարհաքաղաքական նորություններ՝\n• BBC\n• CNN\n• Reuters\n• NYT\n\n📋 Հրամաններ՝\n/start - Սկսել\n/stop - Կանգնեցնել\n/resume - Վերսկսել\n/digest - Ամփոփում\n/help - Օգնություն\n\n✅ Ավտոմատ ծանուցումներ միացված են!"
+    
+    await update.message.reply_text(msg)
+    logger.info(f"User {user_id} started the bot")
+    
+    if not context.job_queue.get_jobs_by_name(str(user_id)):
+        context.job_queue.run_repeating(
+            check_news,
+            interval=300,
+            first=10,
+            data=user_id,
+            name=str(user_id)
+        )
+        logger.info(f"Started news monitoring for user {user_id}")
 
-def match_keywords(text: str) -> bool:
-    if not KEYWORDS:
-        return True
-    text = text.lower()
-    return any(k in text for k in KEYWORDS)
+async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id in user_settings:
+        user_settings[user_id]['active'] = False
+    await update.message.reply_text("🔕 Ծանուցումները կանգնեցված են։")
+    logger.info(f"User {user_id} stopped notifications")
 
-# ======================
-# COMMANDS
-# ======================
-@dp.message(Command("start"))
-async def start(msg: types.Message):
-    SUBSCRIBERS.add(msg.chat.id)
-    await msg.answer(
-        "🌍 News Monitor Bot — Ակտիվ է\n\n"
-        "📌 Հրամաններ\n"
-        "/keywords — Keywords\n"
-        "/add_keyword բառ\n"
-        "/remove_keyword բառ\n"
-        "/test_news — Թեստ\n"
-        "/stop — Դադարեցնել"
-    )
+async def resume(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id in user_settings:
+        user_settings[user_id]['active'] = True
+    await update.message.reply_text("🔔 Ծանուցումները վերսկսված են!")
+    logger.info(f"User {user_id} resumed notifications")
 
-@dp.message(Command("stop"))
-async def stop(msg: types.Message):
-    SUBSCRIBERS.discard(msg.chat.id)
-    await msg.answer("⛔️ Push նորությունները կանգնեցված են")
+async def get_digest(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("📊 Բեռնում եմ...")
+    user_id = update.effective_user.id
+    keywords = user_settings.get(user_id, {}).get('keywords', KEYWORDS)
+    articles = []
+    
+    for name, url in NEWS_SOURCES.items():
+        try:
+            logger.info(f"Fetching {name}...")
+            feed = feedparser.parse(url)
+            for entry in feed.entries[:5]:
+                title = entry.get('title', '')
+                text = (title + ' ' + entry.get('summary', '')).lower()
+                if any(kw in text for kw in keywords):
+                    articles.append({
+                        'source': name,
+                        'title': title,
+                        'link': entry.get('link', '')
+                    })
+        except Exception as e:
+            logger.error(f"Error fetching {name}: {e}")
+    
+    if not articles:
+        await update.message.reply_text("Նորություններ չեն գտնվել։")
+        return
+    
+    msg = "📰 Վերջին նորություններ՝\n\n"
+    for i, a in enumerate(articles[:10], 1):
+        msg += f"{i}. [{a['source']}] {a['title']}\n{a['link']}\n\n"
+    
+    await update.message.reply_text(msg)
+    logger.info(f"Sent digest to user {user_id} with {len(articles)} articles")
 
-@dp.message(Command("keywords"))
-async def keywords(msg: types.Message):
-    if not KEYWORDS:
-        await msg.answer("🔍 Keywords չկան")
-    else:
-        await msg.answer("🔍 Keywords:\n" + ", ".join(sorted(KEYWORDS)))
+async def check_news(context: ContextTypes.DEFAULT_TYPE):
+    user_id = context.job.data
+    
+    if not user_settings.get(user_id, {}).get('active', True):
+        return
+    
+    keywords = user_settings.get(user_id, {}).get('keywords', KEYWORDS)
+    
+    for name, url in NEWS_SOURCES.items():
+        try:
+            feed = feedparser.parse(url)
+            
+            for entry in feed.entries[:3]:
+                title = entry.get('title', '')
+                link = entry.get('link', '')
+                text = (title + ' ' + entry.get('summary', '')).lower()
+                article_id = f"{name}_{link}"
+                
+                if article_id in last_check.get(user_id, set()):
+                    continue
+                
+                if any(kw in text for kw in keywords):
+                    msg = f"🌍 {name}\n\n{title}\n\n{link}"
+                    await context.bot.send_message(chat_id=user_id, text=msg)
+                    
+                    if user_id not in last_check:
+                        last_check[user_id] = set()
+                    last_check[user_id].add(article_id)
+                    
+                    if len(last_check[user_id]) > 100:
+                        last_check[user_id] = set(list(last_check[user_id])[-50:])
+                    
+                    await asyncio.sleep(2)
+        except Exception as e:
+            logger.error(f"Error in check_news for {name}: {e}")
 
-@dp.message(Command("add_keyword"))
-async def add_keyword(msg: types.Message):
-    parts = msg.text.split(maxsplit=1)
-    if len(parts) < 2:
-        return await msg.answer("❗ Օրինակ՝ /add_keyword Trump")
-    KEYWORDS.add(parts[1].lower())
-    await msg.answer(f"➕ Keyword ավելացված է՝ {parts[1]}")
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = "📚 Հրամաններ՝\n\n/start - Սկսել\n/stop - Կանգնեցնել\n/resume - Վերսկսել\n/digest - Ամփոփում\n/help - Օգնություն"
+    await update.message.reply_text(text)
 
-@dp.message(Command("remove_keyword"))
-async def remove_keyword(msg: types.Message):
-    parts = msg.text.split(maxsplit=1)
-    if len(parts) < 2:
-        return await msg.answer("❗ Օրինակ՝ /remove_keyword Trump")
-    KEYWORDS.discard(parts[1].lower())
-    await msg.answer(f"➖ Keyword հեռացված է՝ {parts[1]}")
+def main():
+    if not TOKEN:
+        logger.error("BOT_TOKEN not set!")
+        return
+    
+    logger.info("Starting bot...")
+    app = Application.builder().token(TOKEN).build()
+    
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("stop", stop))
+    app.add_handler(CommandHandler("resume", resume))
+    app.add_handler(CommandHandler("digest", get_digest))
+    app.add_handler(CommandHandler("help", help_command))
+    
+    logger.info("Bot is running...")
+    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
-@dp.message(Command("test_news"))
-async def test_news(msg: types.Message):
-    await msg.answer("🧪 Թեստավորում եմ RSS-երը…")
-    await check_news(test_chat=msg.chat.id)
-
-# ======================
-# NEWS LOOP
-# ======================
-async def check_news(test_chat: int | None = None):
-    for source, url in RSS_SOURCES.items():
-        feed = feedparser.parse(url)
-
-        for entry in feed.entries[:5]:
-            if not hasattr(entry, "published_parsed"):
-                continue
-
-            title = entry.title
-            summary = getattr(entry, "summary", "")
-            content = f"{title} {summary}".lower()
-
-            if not match_keywords(content):
-                continue
-
-            if entry.link in SENT_LINKS:
-                continue
-
-            SENT_LINKS.add(entry.link)
-
-            time_text = format_times(entry.published_parsed)
-
-            message = (
-                f"📰 <b>{source}</b>\n"
-                f"<b>{title}</b>\n\n"
-                f"{time_text}\n"
-                f"🔗 {entry.link}"
-            )
-
-            targets = [test_chat] if test_chat else SUBSCRIBERS
-
-            for chat_id in targets:
-                try:
-                    await bot.send_message(chat_id, message, parse_mode="HTML")
-                except Exception:
-                    pass
-
-async def news_loop():
-    while True:
-        await check_news()
-        await asyncio.sleep(CHECK_INTERVAL)
-
-# ======================
-# MAIN
-# ======================
-async def main():
-    asyncio.create_task(news_loop())
-    await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    asyncio.run(main())
+if __name__ == '__main__':
+    main()
