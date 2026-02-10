@@ -79,16 +79,14 @@ def get_main_keyboard():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     settings = get_user_settings(user_id)
-    existing_jobs = context.job_queue.get_jobs_by_name(str(user_id))
-    if not existing_jobs:
-        context.job_queue.run_repeating(
-            check_news,
-            interval=60,      # կամ 300՝ եթե 5 րոպե
-            first=10,
-            data=user_id,
-            name=str(user_id)
-        )
-
+    context.job_queue.run_repeating(
+        check_news,
+        interval=settings['check_interval'],  # 60 վրկ
+        first=10,
+        data=user_id,
+        name=str(user_id)
+    )
+    
     msg = (
         "🌍 <b>News Monitor Bot</b>\n\n"
         "Բարի գալուստ! Ես կուղարկեմ քեզ ավտոմատ նորություններ\n"
