@@ -3,3 +3,4 @@ feedparser
 pytz
 fastapi>=0.100.0
 hypercorn
+uvloop
