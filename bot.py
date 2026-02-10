@@ -8,6 +8,19 @@ from aiogram.types import Message
 from datetime import datetime
 import pytz
 
+UTC = pytz.utc
+ARM = pytz.timezone("Asia/Yerevan")
+
+def format_times(published):
+    # published = entry.published_parsed
+    utc_time = datetime(*published[:6], tzinfo=UTC)
+    arm_time = utc_time.astimezone(ARM)
+
+    return (
+        f"⏰ 🇺🇸 {utc_time.strftime('%H:%M %d.%m.%Y')} UTC | "
+        f"🇦🇲 {arm_time.strftime('%H:%M %d.%m.%Y')} ARM"
+    )
+
 # ======================
 # CONFIG
 # ======================
