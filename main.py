@@ -4,122 +4,116 @@ import feedparser
 from datetime import datetime
 import pytz
 
-from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    ContextTypes,
-)
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes
 
-from apscheduler.schedulers.background import BackgroundScheduler
-
-# ---------------- CONFIG ----------------
-
+# ================== ENV ==================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")   # https://xxx.up.railway.app
 PORT = int(os.getenv("PORT", 8080))
 
-RSS_URLS = [
-    "https://news.am/arm/rss/",
-    "https://armenpress.am/arm/rss/"
+# ================== LOG ==================
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("news-bot")
+
+# ================== TIMEZONES ==================
+TZ_US = pytz.timezone("America/New_York")
+TZ_AM = pytz.timezone("Asia/Yerevan")
+
+# ================== DEFAULT SOURCES ==================
+SOURCES = {
+    "BBC": "https://feeds.bbci.co.uk/news/world/rss.xml",
+    "CNN": "https://rss.cnn.com/rss/edition_world.rss",
+    "Reuters": "https://feeds.reuters.com/reuters/worldNews",
+}
+
+# ================== DEFAULT KEYWORDS ==================
+KEYWORDS = [
+    "armenia", "azerbaijan", "russia", "ukraine",
+    "iran", "turkey", "war", "conflict",
+    "nato", "election", "military", "sanction"
 ]
 
-CHECK_INTERVAL_MINUTES = 1
-TIMEZONE_AM = pytz.timezone("Asia/Yerevan")
+# ================== STATE ==================
+SUBSCRIBERS = set()
+SENT_LINKS = set()
 
-# ---------------- LOGGING ----------------
+# ================== HELPERS ==================
+def format_times(published):
+    try:
+        dt = datetime(*published[:6], tzinfo=pytz.utc)
+        us = dt.astimezone(TZ_US).strftime("%H:%M")
+        am = dt.astimezone(TZ_AM).strftime("%H:%M")
+        return f"🕒 🇺🇸 {us}\n🕒 🇦🇲 {am}"
+    except Exception:
+        return ""
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
-
-# ---------------- STORAGE ----------------
-
-sent_links = set()
-
-# ---------------- BOT COMMANDS ----------------
-
+# ================== COMMANDS ==================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        ["🔎 Ֆիլտրեր"],
-        ["⚙️ Կարգավորումներ"],
-        ["📊 Ակտիվություն (վերջին 1 ժամ)"],
-    ]
+    chat_id = update.effective_chat.id
+    SUBSCRIBERS.add(chat_id)
+
     await update.message.reply_text(
-        "🎯 Բոտը ակտիվացված է ✅",
-        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
+        "✅ Բոտը միացված է\n"
+        "📰 Աղբյուրներ՝ BBC, CNN, Reuters\n"
+        "🔎 Ֆիլտրում՝ վերնագիր + նկարագրություն\n"
+        "⏱ Ստուգում՝ ամեն 1 րոպե"
     )
 
-# ---------------- RSS JOB ----------------
-
-async def check_rss(context: ContextTypes.DEFAULT_TYPE):
-    bot = context.bot
-    chat_id = context.application.bot_data.get("chat_id")
-
-    if not chat_id:
-        return
-
-    for url in RSS_URLS:
+# ================== NEWS CHECK ==================
+async def check_news(context: ContextTypes.DEFAULT_TYPE):
+    for name, url in SOURCES.items():
         feed = feedparser.parse(url)
 
-        for entry in feed.entries[:5]:
-            link = entry.get("link")
-            if not link or link in sent_links:
+        for entry in feed.entries[:10]:
+            title = entry.get("title", "")
+            summary = entry.get("summary", "")
+            text = f"{title} {summary}".lower()
+
+            if not any(k in text for k in KEYWORDS):
                 continue
 
-            sent_links.add(link)
+            link = entry.get("link")
+            if not link or link in SENT_LINKS:
+                continue
 
-            title = entry.get("title", "Առանց վերնագրի")
-            description = entry.get("summary", "")
-
-            published = entry.get("published_parsed")
-            if published:
-                published_dt = datetime(*published[:6], tzinfo=pytz.utc)
-                am_time = published_dt.astimezone(TIMEZONE_AM)
-                time_text = am_time.strftime("%H:%M %d-%m-%Y")
-            else:
-                time_text = "Ժամը անհայտ"
+            times = format_times(entry.get("published_parsed", []))
 
             message = (
-                f"📰 <b>{title}</b>\n\n"
-                f"{description}\n\n"
-                f"🕒 🇦🇲 {time_text}\n"
+                f"📰 <b>{name}</b>\n"
+                f"📌 {title}\n\n"
+                f"{times}\n\n"
                 f"🔗 {link}"
             )
 
-            await bot.send_message(
-                chat_id=chat_id,
-                text=message,
-                parse_mode="HTML",
-                disable_web_page_preview=False,
-            )
+            for chat_id in SUBSCRIBERS:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=message,
+                    parse_mode="HTML",
+                    disable_web_page_preview=True
+                )
 
-# ---------------- MAIN ----------------
+            SENT_LINKS.add(link)
 
+# ================== MAIN ==================
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
 
-    # հիշում ենք առաջին chat_id-ն
-    async def remember_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        context.application.bot_data["chat_id"] = update.message.chat_id
-
-    app.add_handler(CommandHandler("remember", remember_chat))
-
-    scheduler = BackgroundScheduler()
-    scheduler.add_job(
-        lambda: app.create_task(check_rss(ContextTypes.DEFAULT_TYPE(application=app))),
-        "interval",
-        minutes=CHECK_INTERVAL_MINUTES,
+    app.job_queue.run_repeating(
+        check_news,
+        interval=60,   # 1 րոպե
+        first=10
     )
-    scheduler.start()
+
+    logger.info("Bot started")
 
     app.run_webhook(
         listen="0.0.0.0",
         port=PORT,
-        webhook_url=WEBHOOK_URL,
+        webhook_url=WEBHOOK_URL
     )
 
 if __name__ == "__main__":
