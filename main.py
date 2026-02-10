@@ -8,11 +8,17 @@ import feedparser
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
 TOKEN = os.getenv('BOT_TOKEN')
-CHANNEL_ID = os.getenv('CHANNEL_ID')
+if not TOKEN:
+    raise ValueError("BOT_TOKEN not set!")
+
+CHANNEL_ID = os.getenv('CHANNEL_ID')  # -100xxxxxxxxxx ձևաչափով
 
 DATA_FILE = 'data.json'
 
@@ -21,11 +27,18 @@ def load_data():
         with open(DATA_FILE, 'r', encoding='utf-8') as f:
             return json.load(f)
     except FileNotFoundError:
+        logger.info("data.json չգտնվեց → ստեղծվում է նոր")
+        return {'sources': [], 'hashtags': [], 'monitoring': False, 'last_seen': {}, 'user_id': None}
+    except Exception as e:
+        logger.error(f"data.json load error: {e}")
         return {'sources': [], 'hashtags': [], 'monitoring': False, 'last_seen': {}, 'user_id': None}
 
 def save_data(data):
-    with open(DATA_FILE, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    try:
+        with open(DATA_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"data.json save error: {e}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     data = load_data()
@@ -37,7 +50,7 @@ async def add_source(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not context.args:
         await update.message.reply_text('/add_source <RSS URL>')
         return
-    url = context.args[0]
+    url = context.args[0].strip()
     data = load_data()
     if url not in data['sources']:
         data['sources'].append(url)
@@ -48,7 +61,7 @@ async def remove_source(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not context.args:
         await update.message.reply_text('/remove_source <URL>')
         return
-    url = context.args[0]
+    url = context.args[0].strip()
     data = load_data()
     if url in data['sources']:
         data['sources'].remove(url)
@@ -84,7 +97,12 @@ async def start_monitor(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     data['monitoring'] = True
     save_data(data)
-    context.job_queue.run_repeating(check_news, interval=300, first=5, name="news_monitor")
+    context.job_queue.run_repeating(
+        check_news,
+        interval=300,  # 5 րոպե
+        first=5,
+        name="news_monitor"
+    )
     logger.info("news_monitor job գրանցվեց")
     await update.message.reply_text('Մոնիտորինգը միացավ (ամեն 5 րոպե)')
 
@@ -105,7 +123,9 @@ async def check_news(context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("check_news սկսվեց")
     data = load_data()
     if not data['monitoring']:
+        logger.info("monitoring անջատված է")
         return
+    logger.info(f"Ստուգվում է {len(data['sources'])} աղբյուր")
     for source in data['sources']:
         try:
             feed = feedparser.parse(source)
@@ -128,10 +148,11 @@ async def check_news(context: ContextTypes.DEFAULT_TYPE) -> None:
                         if dt:
                             utc = datetime(*dt[:6], tzinfo=pytz.utc)
                             arm = utc.astimezone(pytz.timezone('Asia/Yerevan'))
-                            msg = f"{entry.title}\n{(entry.get('description') or '')[:300]}\n{entry.link}\n🇺🇸 {utc}\n🇦🇲 {arm}"
+                            msg = f"{entry.title}\n{(entry.get('description') or '')[:300]}\n{entry.link}\n🇺🇸 {utc.strftime('%Y-%m-%d %H:%M UTC')}\n🇦🇲 {arm.strftime('%Y-%m-%d %H:%M')}"
                             await context.bot.send_message(chat_id=CHANNEL_ID, text=msg)
                             if data['user_id']:
                                 await context.bot.send_message(chat_id=data['user_id'], text=msg)
+                            logger.info(f"Ուղարկվեց: {entry.title[:50]}...")
                 new_last_seen[guid] = True
             data['last_seen'][source] = new_last_seen
         except Exception as e:
