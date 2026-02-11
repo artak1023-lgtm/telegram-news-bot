@@ -1,0 +1,507 @@
+import logging
+import feedparser
+import asyncio
+import os
+from datetime import datetime, timedelta
+import pytz
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application, CommandHandler, ContextTypes, 
+    CallbackQueryHandler, MessageHandler, filters
+)
+
+logging.basicConfig(format='%(asctime)s - %(levelname)s', level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+TOKEN = os.environ.get('BOT_TOKEN')
+CHANNEL_ID = os.environ.get('CHANNEL_ID')  # Քո channel-ի ID-ն
+
+# Ավելացված աղբյուրներ ավելի լրիվ ծածկույթի համար
+DEFAULT_SOURCES = {
+    'BBC': 'http://feeds.bbci.co.uk/news/world/rss.xml',
+    'CNN': 'http://rss.cnn.com/rss/edition_world.rss',
+    'Reuters': 'https://feeds.reuters.com/reuters/worldNews',
+    'NYT': 'https://rss.nytimes.com/services/xml/rss/nyt/World.xml',
+    'Al Jazeera': 'https://www.aljazeera.com/xml/rss/all.xml',
+    'The Guardian': 'https://www.theguardian.com/world/rss',
+}
+
+DEFAULT_KEYWORDS = [
+    'russia', 'china', 'ukraine', 'nato', 'geopolit',
+    'sanctions', 'conflict', 'war', 'diplomacy', 'trump',
+    'europe', 'middle east', 'taiwan', 'israel', 'iran',
+    'armenia', 'azerbaijan', 'turkey', 'election', 'military',
+    'biden', 'putin', 'xi', 'erdogan', 'macron'
+]
+
+# Ավելի մեծ cache վերջին նորությունների համար
+last_check = set()  # Global cache բոլոր ուղարկված նորությունների համար
+user_settings = {}
+
+def get_user_settings(user_id):
+    if user_id not in user_settings:
+        user_settings[user_id] = {
+            'active': True,
+            'keywords': DEFAULT_KEYWORDS.copy(),
+            'sources': DEFAULT_SOURCES.copy(),
+            'check_interval': 60,  # 1 րոպե (վայրկյաններով)
+            'max_items_per_source': 15,  # Ավելի շատ նորություններ ստուգել
+        }
+    return user_settings[user_id]
+
+def format_time_with_timezones(published_time):
+    """Ֆորմատավորել ժամը երկու ժամային գոտիներով"""
+    try:
+        from email.utils import parsedate_to_datetime
+        dt = parsedate_to_datetime(published_time)
+        
+        us_tz = pytz.timezone('America/New_York')
+        us_time = dt.astimezone(us_tz)
+        us_formatted = us_time.strftime('%b %d, %Y • %I:%M %p %Z')
+        
+        am_tz = pytz.timezone('Asia/Yerevan')
+        am_time = dt.astimezone(am_tz)
+        am_formatted = am_time.strftime('%b %d, %Y • %H:%M %Z')
+        
+        return f"🇺🇸 {us_formatted}\n🇦🇲 {am_formatted}", dt
+    except:
+        return "", None
+
+def get_main_keyboard():
+    keyboard = [
+        [InlineKeyboardButton("📰 Աղբյուրներ", callback_data='sources')],
+        [InlineKeyboardButton("🔍 Ֆիլտրեր", callback_data='filters')],
+        [InlineKeyboardButton("⚙️ Կարգավորումներ", callback_data='settings')],
+        [InlineKeyboardButton("📊 Ամփոփում (վերջին 1 ժամ)", callback_data='digest')],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    settings = get_user_settings(user_id)
+    
+    msg = (
+        "🌍 <b>Artak News Monitor Bot</b>\n\n"
+        "Բարի գալուստ! Ես կուղարկեմ ձեզ աշխարհաքաղաքական նորություններ։\n\n"
+        "⚡️ Ավտոմատ ստուգում՝ <b>ամեն 1 րոպե</b>\n"
+        "🎯 Ոչ մի նորություն չի բաց մնա\n"
+        "📢 Նորությունները ուղարկվում են channel-ին\n\n"
+        "Ընտրեք ցանկալի գործողությունը՝"
+    )
+    
+    await update.message.reply_text(
+        msg, 
+        reply_markup=get_main_keyboard(),
+        parse_mode='HTML'
+    )
+    logger.info(f"User {user_id} started the bot")
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    settings = get_user_settings(user_id)
+    
+    if query.data == 'sources':
+        keyboard = []
+        for name in settings['sources'].keys():
+            keyboard.append([InlineKeyboardButton(f"✓ {name}", callback_data=f'source_{name}')])
+        keyboard.append([InlineKeyboardButton("➕ Ավելացնել աղբյուր", callback_data='add_source')])
+        keyboard.append([InlineKeyboardButton("« Հետ", callback_data='back')])
+        
+        await query.edit_message_text(
+            "📰 <b>Աղբյուրներ</b>\n\nԱկտիվ աղբյուրներ՝",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='HTML'
+        )
+    
+    elif query.data == 'filters':
+        keywords_text = ', '.join(settings['keywords'][:15])
+        keyboard = [
+            [InlineKeyboardButton("➕ Ավելացնել բառ", callback_data='add_keyword')],
+            [InlineKeyboardButton("➖ Հեռացնել բառ", callback_data='remove_keyword')],
+            [InlineKeyboardButton("📋 Բոլոր բառերը", callback_data='show_all_keywords')],
+            [InlineKeyboardButton("« Հետ", callback_data='back')]
+        ]
+        
+        await query.edit_message_text(
+            f"🔍 <b>Ֆիլտրեր</b>\n\nԲանալի բառեր՝\n{keywords_text}...\n\n"
+            f"Ընդամենը՝ {len(settings['keywords'])} բառ",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='HTML'
+        )
+    
+    elif query.data == 'show_all_keywords':
+        all_keywords = ', '.join(settings['keywords'])
+        keyboard = [[InlineKeyboardButton("« Հետ", callback_data='filters')]]
+        
+        await query.edit_message_text(
+            f"📋 <b>Բոլոր բանալի բառերը</b>\n\n{all_keywords}",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='HTML'
+        )
+    
+    elif query.data == 'settings':
+        status = "🟢 Միացված" if settings['active'] else "🔴 Անջատված"
+        interval_min = settings['check_interval'] // 60
+        keyboard = [
+            [InlineKeyboardButton(
+                f"{'⏸ Դադարեցնել' if settings['active'] else '▶️ Միացնել'}", 
+                callback_data='toggle_active'
+            )],
+            [InlineKeyboardButton(f"⏱ Ստուգում՝ {interval_min} րոպե", callback_data='change_interval')],
+            [InlineKeyboardButton("« Հետ", callback_data='back')]
+        ]
+        
+        channel_info = f"📢 Channel՝ {CHANNEL_ID}" if CHANNEL_ID else "⚠️ Channel չի սահմանված"
+        
+        await query.edit_message_text(
+            f"⚙️ <b>Կարգավորումներ</b>\n\n"
+            f"{channel_info}\n"
+            f"Ծանուցումներ՝ {status}\n"
+            f"Ստուգման հաճախականություն՝ <b>{interval_min} րոպե</b>\n"
+            f"Աղբյուրներ՝ {len(settings['sources'])}\n"
+            f"Բանալի բառեր՝ {len(settings['keywords'])}",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='HTML'
+        )
+    
+    elif query.data == 'change_interval':
+        keyboard = [
+            [InlineKeyboardButton("⚡️ 1 րոպե (առաջարկվող)", callback_data='interval_60')],
+            [InlineKeyboardButton("🔥 2 րոպե", callback_data='interval_120')],
+            [InlineKeyboardButton("⏱ 5 րոպե", callback_data='interval_300')],
+            [InlineKeyboardButton("« Հետ", callback_data='settings')]
+        ]
+        
+        await query.edit_message_text(
+            "⏱ <b>Ստուգման հաճախականություն</b>\n\n"
+            "Ընտրեք թե ինչքան հաճախ ստուգել նորությունները՝",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='HTML'
+        )
+    
+    elif query.data.startswith('interval_'):
+        new_interval = int(query.data.replace('interval_', ''))
+        settings['check_interval'] = new_interval
+        
+        interval_min = new_interval // 60
+        await query.edit_message_text(
+            f"✅ Հաճախականությունը փոխված է՝ <b>{interval_min} րոպե</b>\n\n"
+            f"Նոր նորությունները կստուգվեն ամեն {interval_min} րոպեն։\n"
+            f"(Փոփոխությունը կկիրառվի հաջորդ ստուգումից)",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Հետ", callback_data='settings')]]),
+            parse_mode='HTML'
+        )
+    
+    elif query.data == 'toggle_active':
+        settings['active'] = not settings['active']
+        status = "միացված" if settings['active'] else "անջատված"
+        
+        await query.edit_message_text(
+            f"✅ Ծանուցումները <b>{status}</b> են։",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Հետ", callback_data='settings')]]),
+            parse_mode='HTML'
+        )
+    
+    elif query.data == 'add_source':
+        context.user_data['waiting_for'] = 'add_source'
+        keyboard = [[InlineKeyboardButton("« Հետ", callback_data='sources')]]
+        
+        await query.edit_message_text(
+            "➕ <b>Ավելացնել աղբյուր</b>\n\n"
+            "Ուղարկեք RSS feed-ի հղումը հետևյալ ֆորմատով՝\n"
+            "<code>Անուն | URL</code>\n\n"
+            "Օրինակ՝ <code>Arminfo | https://arminfo.am/rss</code>",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='HTML'
+        )
+    
+    elif query.data == 'add_keyword':
+        context.user_data['waiting_for'] = 'add_keyword'
+        keyboard = [[InlineKeyboardButton("« Հետ", callback_data='filters')]]
+        
+        await query.edit_message_text(
+            "➕ <b>Ավելացնել բառ</b>\n\n"
+            "Ուղարկեք բանալի բառը (օրինակ՝ <code>pashinyan</code>)։\n"
+            "Բառը պետք է լինի անգլերեն։",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='HTML'
+        )
+    
+    elif query.data == 'remove_keyword':
+        context.user_data['waiting_for'] = 'remove_keyword'
+        keyboard = [[InlineKeyboardButton("« Հետ", callback_data='filters')]]
+        
+        await query.edit_message_text(
+            "➖ <b>Հեռացնել բառ</b>\n\n"
+            f"Ներկայիս բառեր՝ {', '.join(settings['keywords'][:20])}\n\n"
+            "Ուղարկեք հեռացվող բառը։",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='HTML'
+        )
+    
+    elif query.data == 'digest':
+        await query.edit_message_text(
+            "🔄 Հավաքում եմ նորություններ...",
+            parse_mode='HTML'
+        )
+        await send_digest(query, user_id, settings)
+    
+    elif query.data == 'back':
+        msg = (
+            "🌍 <b>Artak News Monitor Bot</b>\n\n"
+            "Ընտրեք գործողությունը՝"
+        )
+        await query.edit_message_text(
+            msg,
+            reply_markup=get_main_keyboard(),
+            parse_mode='HTML'
+        )
+
+async def send_digest(query, user_id, settings):
+    articles = []
+    
+    # Հավաքել բոլոր նորությունները ժամանակով
+    for name, url in settings['sources'].items():
+        try:
+            feed = feedparser.parse(url)
+            for entry in feed.entries[:settings['max_items_per_source']]:
+                title = entry.get('title', '')
+                text = (title + ' ' + entry.get('summary', '')).lower()
+                if any(kw in text for kw in settings['keywords']):
+                    time_str, dt = format_time_with_timezones(entry.get('published', ''))
+                    articles.append({
+                        'source': name,
+                        'title': title,
+                        'link': entry.get('link', ''),
+                        'published': entry.get('published', ''),
+                        'time_str': time_str,
+                        'datetime': dt
+                    })
+        except Exception as e:
+            logger.error(f"Error fetching {name}: {e}")
+    
+    if not articles:
+        await query.edit_message_text(
+            "📊 Վերջին ժամում համապատասխան նորություններ չեն գտնվել։",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Հետ", callback_data='back')]])
+        )
+        return
+    
+    # Դասավորել ամենավերջիններից՝ առաջինը
+    articles_sorted = sorted(
+        [a for a in articles if a['datetime']], 
+        key=lambda x: x['datetime'], 
+        reverse=True  # Ամենավերջինները առաջ
+    )
+    
+    msg = f"📰 <b>Վերջին {len(articles_sorted)} նորություններ</b>\n"
+    msg += f"(Ամենավերջինից դեպի հին)\n\n"
+    
+    for i, a in enumerate(articles_sorted[:12], 1):
+        msg += f"{i}. <b>[{a['source']}]</b> {a['title']}\n"
+        if a['time_str']:
+            msg += f"📅 {a['time_str']}\n"
+        msg += f"🔗 {a['link']}\n\n"
+    
+    await query.edit_message_text(
+        msg,
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Հետ", callback_data='back')]]),
+        parse_mode='HTML',
+        disable_web_page_preview=True
+    )
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    settings = get_user_settings(user_id)
+    waiting_for = context.user_data.get('waiting_for')
+    
+    if waiting_for == 'add_source':
+        try:
+            parts = update.message.text.split('|')
+            if len(parts) == 2:
+                name = parts[0].strip()
+                url = parts[1].strip()
+                settings['sources'][name] = url
+                await update.message.reply_text(
+                    f"✅ Աղբյուրը ավելացված է՝ {name}",
+                    reply_markup=get_main_keyboard()
+                )
+            else:
+                await update.message.reply_text(
+                    "❌ Սխալ ֆորմատ։ Օգտագործեք՝ Անուն | URL"
+                )
+        except Exception as e:
+            await update.message.reply_text(f"❌ Սխալ։ {e}")
+        context.user_data['waiting_for'] = None
+    
+    elif waiting_for == 'add_keyword':
+        keyword = update.message.text.strip().lower()
+        if keyword not in settings['keywords']:
+            settings['keywords'].append(keyword)
+            await update.message.reply_text(
+                f"✅ Բառը ավելացված է՝ {keyword}",
+                reply_markup=get_main_keyboard()
+            )
+        else:
+            await update.message.reply_text("⚠️ Այս բառն արդեն կա։")
+        context.user_data['waiting_for'] = None
+    
+    elif waiting_for == 'remove_keyword':
+        keyword = update.message.text.strip().lower()
+        if keyword in settings['keywords']:
+            settings['keywords'].remove(keyword)
+            await update.message.reply_text(
+                f"✅ Բառը հեռացված է՝ {keyword}",
+                reply_markup=get_main_keyboard()
+            )
+        else:
+            await update.message.reply_text("⚠️ Այս բառը չի գտնվել։")
+        context.user_data['waiting_for'] = None
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['waiting_for'] = None
+    await update.message.reply_text(
+        "❌ Չեղարկված է։",
+        reply_markup=get_main_keyboard()
+    )
+
+async def check_news(context: ContextTypes.DEFAULT_TYPE):
+    """Ստուգել նորությունները - կանչվում է ավտոմատ ամեն 1 րոպե"""
+    global last_check
+    
+    if not CHANNEL_ID:
+        logger.warning("CHANNEL_ID not set, skipping news check")
+        return
+    
+    # Օգտագործել default settings
+    settings = get_user_settings('channel_default')
+    
+    if not settings['active']:
+        logger.info("News monitoring is disabled")
+        return
+    
+    logger.info(f"Checking news for channel {CHANNEL_ID}...")
+    new_articles = []
+    
+    for name, url in settings['sources'].items():
+        try:
+            feed = feedparser.parse(url)
+            
+            # Ստուգել ավելի շատ նորություններ (15 հատ)
+            for entry in feed.entries[:settings['max_items_per_source']]:
+                title = entry.get('title', '')
+                link = entry.get('link', '')
+                published = entry.get('published', '')
+                text = (title + ' ' + entry.get('summary', '')).lower()
+                article_id = f"{name}_{link}"
+                
+                # Եթե արդեն ուղարկել ենք, բաց թողնել
+                if article_id in last_check:
+                    continue
+                
+                # Ստուգել բանալի բառերը
+                if any(kw in text for kw in settings['keywords']):
+                    time_str, dt = format_time_with_timezones(published) if published else ("", None)
+                    
+                    new_articles.append({
+                        'name': name,
+                        'title': title,
+                        'link': link,
+                        'time_str': time_str,
+                        'datetime': dt,
+                        'article_id': article_id
+                    })
+        except Exception as e:
+            logger.error(f"Error in check_news for {name}: {e}")
+    
+    # Դասավորել ամենավերջիններից առաջ
+    new_articles_sorted = sorted(
+        [a for a in new_articles if a['datetime']], 
+        key=lambda x: x['datetime'], 
+        reverse=True
+    )
+    
+    # Ուղարկել ամենավերջինները առաջինը
+    for article in new_articles_sorted:
+        try:
+            msg = f"🌍 <b>{article['name']}</b>\n\n{article['title']}\n\n"
+            if article['time_str']:
+                msg += f"📅 {article['time_str']}\n\n"
+            msg += f"🔗 {article['link']}"
+            
+            await context.bot.send_message(
+                chat_id=CHANNEL_ID, 
+                text=msg,
+                parse_mode='HTML',
+                disable_web_page_preview=True
+            )
+            
+            # Պահպանել որ չկրկնվի
+            last_check.add(article['article_id'])
+            
+            # Պահպանել վերջին 200 նորությունները cache-ում
+            if len(last_check) > 200:
+                # Վերցնել վերջին 100-ը
+                last_check = set(list(last_check)[-100:])
+            
+            await asyncio.sleep(2)  # Փոքր ընդմիջում spam-ից խուսափելու համար
+            
+        except Exception as e:
+            logger.error(f"Error sending article: {e}")
+    
+    if new_articles_sorted:
+        logger.info(f"Sent {len(new_articles_sorted)} new articles to channel {CHANNEL_ID}")
+    else:
+        logger.info("No new articles found")
+
+async def post_init(application: Application) -> None:
+    """Սկսել ավտոմատ monitoring bot-ը միացնելիս"""
+    logger.info("=" * 60)
+    logger.info("🚀 Bot started! Setting up automatic news monitoring...")
+    logger.info("=" * 60)
+    
+    if not CHANNEL_ID:
+        logger.error("❌ CHANNEL_ID is not set!")
+        logger.error("Please set CHANNEL_ID environment variable")
+        logger.error("Example: CHANNEL_ID=-1001234567890")
+        return
+    
+    logger.info(f"✅ Channel ID: {CHANNEL_ID}")
+    logger.info(f"✅ Check interval: 60 seconds (1 minute)")
+    logger.info(f"✅ Sources: {len(DEFAULT_SOURCES)}")
+    logger.info(f"✅ Keywords: {len(DEFAULT_KEYWORDS)}")
+    
+    # Ավելացնել global monitoring job
+    application.job_queue.run_repeating(
+        check_news,
+        interval=60,  # 60 վայրկյան = 1 րոպե
+        first=10,     # Առաջին ստուգումը 10 վայրկյանից
+        name='global_news_monitor'
+    )
+    
+    logger.info("=" * 60)
+    logger.info("✅ Automatic monitoring started!")
+    logger.info("📡 Will check news every 60 seconds")
+    logger.info("=" * 60)
+
+def main():
+    if not TOKEN:
+        logger.error("❌ BOT_TOKEN not set!")
+        logger.error("Please set BOT_TOKEN environment variable")
+        return
+    
+    logger.info("Starting Artak News Monitor Bot...")
+    app = Application.builder().token(TOKEN).post_init(post_init).build()
+    
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("cancel", cancel))
+    app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    logger.info("🤖 Bot is running!")
+    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+
+if __name__ == '__main__':
+    main()
